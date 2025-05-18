@@ -19,10 +19,13 @@ conn = sqlite3.connect("files.db")
 
 def main():
     try:
+        init_db()
+
         while True:
             scan_directories()
             sleep(scan_interval_seconds)
     except KeyboardInterrupt:
+        conn.close()
         return
 
 
@@ -33,21 +36,24 @@ def scan_directories():
     for ms_file in ms_files:
         song_dir = os.path.dirname(ms_file)
         pdf_folders = [folder for dp, folders, _ in os.walk(song_dir) for folder in folders if re.match(r'^pdfs?$', folder)]
+        force = False
 
         if len(pdf_folders) == 0:
             pdf_folder = os.path.join(song_dir, 'pdf')
             os.mkdir(pdf_folder)
+            force = True  # pdf folder is empty so we must create new files
+            print(f'Generated pdf folder in {song_dir}')
         else:
             pdf_folder = os.path.join(song_dir, pdf_folders[0])
 
         if len(pdf_folders) > 1:
             print(f'Found more than one pdf folder for song {song_dir}: {pdf_folders}. You should have only one folder. Will use {pdf_folders[0]}.')
 
-        process_song(ms_file, pdf_folder)
+        process_song(ms_file, pdf_folder, force)
 
 
-def process_song(ms_file: str, pdf_folder: str):
-    if needs_update(ms_file):
+def process_song(ms_file: str, pdf_folder: str, force: bool = False):
+    if needs_update(ms_file) or force:  # check needs_update before 'force' as needs_update has side effects that mus be run
         with BatchConfig(ms_file, pdf_folder) as config:
             print(f'Generating parts for {ms_file}')
             subprocess.run([ms, '-j', config.file_name])
@@ -81,6 +87,20 @@ def needs_update(ms_file: str) -> bool:
     return False
 
 
+def init_db():
+    cur = conn.cursor()
+    cur.execute("""
+        create table if not exists files(
+            path TEXT not null
+                constraint files_pk
+                    unique,
+            hash TEXT not null
+        );
+    """)
+    conn.commit()
+    print('Initialized DB')
+
+
 class BatchConfig:
     file_name = 'config.json'
 
@@ -110,5 +130,7 @@ if __name__ == '__main__':
     root = args.root
     scan_interval_seconds = args.scan_interval_seconds
     ms = args.musescore
+
+    print(f'Started with params root={root}, scan_interval={scan_interval_seconds}s, ms={ms}')
 
     main()
