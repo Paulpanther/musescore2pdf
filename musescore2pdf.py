@@ -8,18 +8,25 @@ from time import sleep
 import os
 import re
 import subprocess
+import sqlite3
+import hashlib
 
+root: str
+scan_interval_seconds: int
+ms: str
 
-def main(root: str, scan_interval_seconds: int, ms: str):
+conn = sqlite3.connect("files.db")
+
+def main():
     try:
         while True:
-            scan_directories(root, ms)
+            scan_directories()
             sleep(scan_interval_seconds)
     except KeyboardInterrupt:
         return
 
 
-def scan_directories(root: str, ms: str):
+def scan_directories():
     ms_files = [os.path.join(dp, f) for dp, dn, filenames in os.walk(root) for f in filenames if os.path.splitext(f)[1] == '.mscz']
     print(f"Scanning found {len(ms_files)} musescore file(s)")
 
@@ -36,12 +43,42 @@ def scan_directories(root: str, ms: str):
         if len(pdf_folders) > 1:
             print(f'Found more than one pdf folder for song {song_dir}: {pdf_folders}. You should have only one folder. Will use {pdf_folders[0]}.')
 
-        process_song(ms_file, pdf_folder, ms)
+        process_song(ms_file, pdf_folder)
 
 
-def process_song(ms_file: str, pdf_folder: str, ms: str):
-    with BatchConfig(ms_file, pdf_folder) as config:
-        subprocess.run([ms, '-j', config.file_name])
+def process_song(ms_file: str, pdf_folder: str):
+    if needs_update(ms_file):
+        with BatchConfig(ms_file, pdf_folder) as config:
+            print(f'Generating parts for {ms_file}')
+            subprocess.run([ms, '-j', config.file_name])
+
+
+def sha256sum(filename):
+    h  = hashlib.sha256()
+    b  = bytearray(128*1024)
+    mv = memoryview(b)
+    with open(filename, 'rb', buffering=0) as f:
+        while n := f.readinto(mv):
+            h.update(mv[:n])
+    return h.hexdigest()
+
+
+def needs_update(ms_file: str) -> bool:
+    hash = sha256sum(ms_file)
+
+    cur = conn.cursor()
+    cur.execute(f'SELECT hash FROM files WHERE path = "{ms_file}"')
+    res = cur.fetchone()
+
+    if res is None:
+        cur.execute(f'INSERT INTO files (path, hash) VALUES ("{ms_file}", "{hash}")')
+        conn.commit()
+        return True
+    if res[0] != hash:
+        cur.execute(f'UPDATE files SET hash = "{hash}" WHERE path = "{ms_file}"')
+        conn.commit()
+        return True
+    return False
 
 
 class BatchConfig:
@@ -74,4 +111,4 @@ if __name__ == '__main__':
     scan_interval_seconds = args.scan_interval_seconds
     ms = args.musescore
 
-    main(root, scan_interval_seconds, ms)
+    main()
